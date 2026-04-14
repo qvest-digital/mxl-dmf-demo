@@ -214,9 +214,10 @@ namespace
                 "video/x-raw,format=v210,width={},height={},framerate={}/{} ! "
                 "videoconvert ! "
                 "videoscale ! "
-                "x264enc speed-preset=ultrafast tune=zerolatency bframes=0 ! "
+                "x264enc speed-preset=ultrafast tune=zerolatency bframes=0 key-int-max=30 ! "
                 "video/x-h264,profile=baseline ! "
                 "mpegtsmux ! "
+                "queue leaky=downstream max-size-buffers=3 max-size-time=1000000000 ! "
                 "srtsink uri=\"srt://:5000?mode=listener\"",
                 _config.frameWidth,
                 _config.frameHeight,
