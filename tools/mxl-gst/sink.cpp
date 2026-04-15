@@ -205,8 +205,8 @@ namespace
                 Keep in mind that the profiles and presets used where adapted to minimize CPU usage and latency,
                 but are not necessarily producing the best possible quality.
 
-                Unfortunately, till now there is no easy way to combine the Video and Audio pipelines into a single one, 
-                because the audio pipeline relies on the audio meta which is not supported by the muxers that can be used for streaming. 
+                Unfortunately, till now there is no easy way to combine the Video and Audio pipelines into a single one,
+                because the audio pipeline relies on the audio meta which is not supported by the muxers that can be used for streaming.
                 So we have to use a separate pipeline for video and audio, which means that we cannot use the same SRT sink for both.
             */
             auto pipelineDesc = fmt::format(
