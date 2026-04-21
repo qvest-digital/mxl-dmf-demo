@@ -7,6 +7,38 @@
 #include <mxl/mxl.h>
 #include "Utils.hpp"
 
+#ifdef __linux__
+#   include <sys/vfs.h>
+#   include <linux/magic.h>
+
+namespace
+{
+    bool pathIsTmpFs(char const* path)
+    {
+        struct statfs buf;
+        REQUIRE(statfs(path, &buf) == 0);
+        return buf.f_type == TMPFS_MAGIC || buf.f_type == RAMFS_MAGIC;
+    }
+}
+#endif
+
+TEST_CASE("mxlIsTmpFs returns false for NULL", "[mxlIsTmpFs]")
+{
+    REQUIRE_FALSE(mxlIsTmpFs(nullptr));
+}
+
+TEST_CASE("mxlIsTmpFs returns false for non-existent path", "[mxlIsTmpFs]")
+{
+    REQUIRE_FALSE(mxlIsTmpFs("/this/path/does/not/exist"));
+}
+
+#ifdef __linux__
+TEST_CASE("mxlIsTmpFs matches statfs filesystem type on Linux", "[mxlIsTmpFs]")
+{
+    REQUIRE(mxlIsTmpFs("/") == pathIsTmpFs("/"));
+}
+#endif
+
 TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Flow readers / writers caching", "[instance]")
 {
     auto const opts = "{}";

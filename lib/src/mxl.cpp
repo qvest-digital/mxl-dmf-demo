@@ -11,6 +11,11 @@
 #include "mxl-internal/Logging.hpp"
 #include "mxl-internal/PosixFlowIoFactory.hpp"
 
+#ifdef __linux__
+#   include <sys/vfs.h>
+#   include <linux/magic.h>
+#endif
+
 static char const g_mxl_version_string[] = MXL_VERSION_FULL;
 
 extern "C"
@@ -52,6 +57,27 @@ mxlInstance mxlCreateInstance(char const* in_mxlDomain, char const* in_options)
         MXL_ERROR("Failed to create instance");
         return nullptr;
     }
+}
+
+extern "C" MXL_EXPORT
+bool mxlIsTmpFs(char const* in_path)
+{
+    if (in_path == nullptr)
+    {
+        return false;
+    }
+
+#ifdef __linux__
+    struct statfs buf;
+    if (statfs(in_path, &buf) != 0)
+    {
+        return false;
+    }
+    return buf.f_type == TMPFS_MAGIC || buf.f_type == RAMFS_MAGIC;
+#else
+    (void)in_path;
+    return false;
+#endif
 }
 
 extern "C"
