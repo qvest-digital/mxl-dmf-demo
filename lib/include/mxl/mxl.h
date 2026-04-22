@@ -93,8 +93,8 @@ extern "C"
     /// Checks whether the given path resides on a RAM-backed filesystem.
     ///
     /// On Linux, this detects tmpfs and ramfs using statfs().
-    /// On other platforms (e.g. macOS), this always sets out_isTmpFs to false
-    /// as there is no reliable way to detect RAM-backed filesystems.
+    /// On macOS, this checks the filesystem type name reported by statfs().
+    /// On other platforms, this always sets out_isTmpFs to false.
     ///
     /// \param in_path The filesystem path to check.
     /// \param out_isTmpFs Pointer to a bool that will be set to true if the path

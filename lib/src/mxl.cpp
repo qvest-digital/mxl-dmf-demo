@@ -14,6 +14,9 @@
 #ifdef __linux__
 #   include <sys/vfs.h>
 #   include <linux/magic.h>
+#elif defined(__APPLE__)
+#   include <cstring>
+#   include <sys/mount.h>
 #endif
 
 static char const g_mxl_version_string[] = MXL_VERSION_FULL;
@@ -68,12 +71,22 @@ mxlStatus mxlIsTmpFs(char const* in_path, bool* out_isTmpFs)
     }
 
 #ifdef __linux__
-    auto buf = ::statfs{};
+    using statfs_t = struct statfs;
+    auto buf = statfs_t{};
     if (::statfs(in_path, &buf) != 0)
     {
         return MXL_ERR_UNKNOWN;
     }
-    *out_isTmpFs = buf.f_type == TMPFS_MAGIC || buf.f_type == RAMFS_MAGIC;
+    *out_isTmpFs = (buf.f_type == TMPFS_MAGIC) || (buf.f_type == RAMFS_MAGIC);
+    return MXL_STATUS_OK;
+#elif defined(__APPLE__)
+    using statfs_t = struct statfs;
+    auto buf = statfs_t{};
+    if (::statfs(in_path, &buf) != 0)
+    {
+        return MXL_ERR_UNKNOWN;
+    }
+    *out_isTmpFs = std::strcmp(buf.f_fstypename, "tmpfs") == 0;
     return MXL_STATUS_OK;
 #else
     *out_isTmpFs = false;

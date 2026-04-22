@@ -17,7 +17,7 @@ namespace
     {
         struct statfs buf;
         REQUIRE(statfs(path, &buf) == 0);
-        return buf.f_type == TMPFS_MAGIC || buf.f_type == RAMFS_MAGIC;
+        return (buf.f_type == TMPFS_MAGIC) || (buf.f_type == RAMFS_MAGIC);
     }
 }
 #endif
@@ -33,13 +33,13 @@ TEST_CASE("mxlIsTmpFs returns MXL_ERR_INVALID_ARG for NULL out pointer", "[mxlIs
     REQUIRE(mxlIsTmpFs("/tmp", nullptr) == MXL_ERR_INVALID_ARG);
 }
 
-#ifdef __linux__
 TEST_CASE("mxlIsTmpFs returns error for non-existent path", "[mxlIsTmpFs]")
 {
     bool isTmpFs = true;
     REQUIRE(mxlIsTmpFs("/this/path/does/not/exist", &isTmpFs) != MXL_STATUS_OK);
 }
 
+#ifdef __linux__
 TEST_CASE("mxlIsTmpFs matches statfs filesystem type on Linux", "[mxlIsTmpFs]")
 {
     bool isTmpFs = false;
