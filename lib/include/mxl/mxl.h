@@ -93,15 +93,18 @@ extern "C"
     /// Checks whether the given path resides on a RAM-backed filesystem.
     ///
     /// On Linux, this detects tmpfs and ramfs using statfs().
-    /// On other platforms (e.g. macOS), this always returns false as there is
-    /// no reliable way to detect RAM-backed filesystems.
+    /// On other platforms (e.g. macOS), this always sets out_isTmpFs to false
+    /// as there is no reliable way to detect RAM-backed filesystems.
     ///
     /// \param in_path The filesystem path to check.
-    /// \return true if the path is on a RAM-backed filesystem, false otherwise
-    ///         (including on error or if in_path is NULL).
+    /// \param out_isTmpFs Pointer to a bool that will be set to true if the path
+    ///        is on a RAM-backed filesystem, false otherwise.
+    /// \return MXL_STATUS_OK on success, MXL_ERR_INVALID_ARG if in_path or
+    ///         out_isTmpFs is NULL, MXL_ERR_UNKNOWN if the filesystem type
+    ///         could not be determined.
     ///
     MXL_EXPORT
-    bool mxlIsTmpFs(char const* in_path);
+    mxlStatus mxlIsTmpFs(char const* in_path, bool* out_isTmpFs);
 
     ///
     /// Destroy the MXL instance.  This will also release all flows readers/writers associated with the instance.

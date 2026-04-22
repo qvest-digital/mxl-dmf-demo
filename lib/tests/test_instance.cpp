@@ -22,20 +22,36 @@ namespace
 }
 #endif
 
-TEST_CASE("mxlIsTmpFs returns false for NULL", "[mxlIsTmpFs]")
+TEST_CASE("mxlIsTmpFs returns MXL_ERR_INVALID_ARG for NULL path", "[mxlIsTmpFs]")
 {
-    REQUIRE_FALSE(mxlIsTmpFs(nullptr));
+    bool isTmpFs = true;
+    REQUIRE(mxlIsTmpFs(nullptr, &isTmpFs) == MXL_ERR_INVALID_ARG);
 }
 
-TEST_CASE("mxlIsTmpFs returns false for non-existent path", "[mxlIsTmpFs]")
+TEST_CASE("mxlIsTmpFs returns MXL_ERR_INVALID_ARG for NULL out pointer", "[mxlIsTmpFs]")
 {
-    REQUIRE_FALSE(mxlIsTmpFs("/this/path/does/not/exist"));
+    REQUIRE(mxlIsTmpFs("/tmp", nullptr) == MXL_ERR_INVALID_ARG);
 }
 
 #ifdef __linux__
+TEST_CASE("mxlIsTmpFs returns error for non-existent path", "[mxlIsTmpFs]")
+{
+    bool isTmpFs = true;
+    REQUIRE(mxlIsTmpFs("/this/path/does/not/exist", &isTmpFs) != MXL_STATUS_OK);
+}
+
 TEST_CASE("mxlIsTmpFs matches statfs filesystem type on Linux", "[mxlIsTmpFs]")
 {
-    REQUIRE(mxlIsTmpFs("/") == pathIsTmpFs("/"));
+    bool isTmpFs = false;
+    REQUIRE(mxlIsTmpFs("/", &isTmpFs) == MXL_STATUS_OK);
+    REQUIRE(isTmpFs == pathIsTmpFs("/"));
+}
+
+TEST_CASE("mxlIsTmpFs detects /dev/shm as tmpfs on Linux", "[mxlIsTmpFs]")
+{
+    bool isTmpFs = false;
+    REQUIRE(mxlIsTmpFs("/dev/shm", &isTmpFs) == MXL_STATUS_OK);
+    REQUIRE(isTmpFs);
 }
 #endif
 

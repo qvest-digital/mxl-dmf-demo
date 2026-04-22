@@ -60,23 +60,24 @@ mxlInstance mxlCreateInstance(char const* in_mxlDomain, char const* in_options)
 }
 
 extern "C" MXL_EXPORT
-bool mxlIsTmpFs(char const* in_path)
+mxlStatus mxlIsTmpFs(char const* in_path, bool* out_isTmpFs)
 {
-    if (in_path == nullptr)
+    if (in_path == nullptr || out_isTmpFs == nullptr)
     {
-        return false;
+        return MXL_ERR_INVALID_ARG;
     }
 
 #ifdef __linux__
-    struct statfs buf;
-    if (statfs(in_path, &buf) != 0)
+    auto buf = ::statfs{};
+    if (::statfs(in_path, &buf) != 0)
     {
-        return false;
+        return MXL_ERR_UNKNOWN;
     }
-    return buf.f_type == TMPFS_MAGIC || buf.f_type == RAMFS_MAGIC;
+    *out_isTmpFs = buf.f_type == TMPFS_MAGIC || buf.f_type == RAMFS_MAGIC;
+    return MXL_STATUS_OK;
 #else
-    (void)in_path;
-    return false;
+    *out_isTmpFs = false;
+    return MXL_STATUS_OK;
 #endif
 }
 
