@@ -6,7 +6,7 @@ FROM ghcr.io/qvest-digital/mxl-base:${BASE_TAG}
 
 # Switch to root to install writer-specific requirements and move files
 USER 0:0
-RUN apt-get update && apt-get install -y gstreamer1.0-x && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y gstreamer1.0-x gstreamer1.0-libav && rm -rf /var/lib/apt/lists/*
 
 # Move the JSON files that were added to the base image during its build
 # This avoids the circular dependency error
@@ -19,4 +19,11 @@ USER mxl
 WORKDIR /home/mxl
 
 ENTRYPOINT []
-CMD ["/usr/bin/mxl-gst-testsrc", "-d", "/domain", "-v", "/home/mxl/v210_flow.json", "-a", "/home/mxl/audio_flow.json"]
+# VIDEO_SOURCE selects the writer mode:
+#   default (or unset) → mxl-gst-testsrc (synthetic colour bars + tone, UUIDs from JSON)
+#   nasa               → mxl-gst-looping-filesrc on /video/sample.ts (looped MPEG-TS)
+#
+# In nasa mode, VIDEO_FLOW_UUID + AUDIO_FLOW_UUID env vars override the auto-generated
+# flow UUIDs so the consumer (mxl-gst-sink) can rendezvous on a deterministic ID.
+# Mount the MPEG-TS file at /video/sample.ts (read-only).
+CMD ["/bin/sh", "-c", "if [ \"$VIDEO_SOURCE\" = \"nasa\" ]; then exec /usr/bin/mxl-gst-looping-filesrc -d /domain -i /video/sample.ts ${VIDEO_FLOW_UUID:+-v $VIDEO_FLOW_UUID} ${AUDIO_FLOW_UUID:+-a $AUDIO_FLOW_UUID}; else exec /usr/bin/mxl-gst-testsrc -d /domain -v /home/mxl/v210_flow.json -a /home/mxl/audio_flow.json; fi"]

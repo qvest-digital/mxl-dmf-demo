@@ -9,13 +9,38 @@ services:
     image: mxl-writer:local
     environment:
       FI_PROVIDER: tcp
+      # VIDEO_SOURCE: nasa | default
+      #   default → mxl-gst-testsrc (synthetic, UUIDs from JSON)
+      #   nasa    → mxl-gst-looping-filesrc on /video/sample.ts (4K Earth, looped)
+      VIDEO_SOURCE: ${VIDEO_SOURCE:-default}
+      # Used only when VIDEO_SOURCE=nasa — the writer publishes flows under these UUIDs
+      # so the reader can rendezvous on a deterministic ID. Reusing the testsrc JSON UUIDs
+      # means existing reader manifests work without changes.
+      VIDEO_FLOW_UUID: 5fbec3b1-1b0f-417d-9059-8b94a47197ed
+      AUDIO_FLOW_UUID: b3bb5be7-9fe9-4324-a5bb-4c70e1084449
     volumes:
       - mxl-domain:/domain
+      # NASA TS file: generate once via
+      #   ffmpeg -y -i nasa_earth_4k.mp4 -c:v copy -c:a mp2 -b:a 192k -f mpegts /tmp/nasa_earth_mp2.ts
+      - /tmp/nasa_earth_mp2.ts:/video/sample.ts:ro
 
   reader:
     image: mxl-reader:local
     environment:
       FI_PROVIDER: tcp
+      VIDEO_FLOW_UUID: 5fbec3b1-1b0f-417d-9059-8b94a47197ed
+    ports:
+      - "5000:5000/udp"
+    # Wait for writer to publish the flow, then start the SRT sink.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        for i in $$(seq 1 30); do
+          /usr/bin/mxl-info -d /domain -l 2>/dev/null | grep -q "$$VIDEO_FLOW_UUID" && break
+          echo "waiting for video flow $$VIDEO_FLOW_UUID..."; sleep 1
+        done
+        exec /usr/bin/mxl-gst-sink -d /domain -v $$VIDEO_FLOW_UUID
     volumes:
       - mxl-domain:/domain
     depends_on:

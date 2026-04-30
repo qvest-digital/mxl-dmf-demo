@@ -159,9 +159,20 @@ kubectl get pods -n kube-system | grep efa
 
 ## Step 6: Deploy the Manifest
 
+Two variants are provided. Both use the same reader (subscribed to flow UUID `5fbec3b1-...`):
+
+| Variant | Source | Use case |
+|---|---|---|
+| `kube-aws-2-nodes-efa.yaml` | Synthetic test pattern (`mxl-gst-testsrc`) | Default smoke test, fabric verification |
+| `kube-aws-2-nodes-efa-nasa.yaml` | NASA Earth 4K MP4 (looped) — **DMF-154** | Broadcaster demo, EFA throughput showcase |
+
 ```bash
 cd /path/to/mxl-dmf-demo
+# Default (synthetic test pattern)
 kubectl apply -f examples/aws/kube-aws-2-nodes-efa.yaml
+
+# OR — NASA 4K Earth showcase (init container downloads + transcodes ~2 GB on first start; ~3 min)
+kubectl apply -f examples/aws/kube-aws-2-nodes-efa-nasa.yaml
 ```
 
 Check deployment:
@@ -169,6 +180,8 @@ Check deployment:
 ```bash
 kubectl get pods -o wide
 kubectl get svc
+# For NASA variant, follow the init container's progress:
+kubectl logs deployment/writer-media-function-efa -c prepare-nasa-video -f
 ```
 
 Verify:
@@ -325,4 +338,5 @@ aws ecr delete-repository --repository-name mxl-reader-efa --force --region $AWS
 | `examples/Dockerfile.reader.efa.txt` | Reader image with fabrics target + SRT sink |
 | `examples/aws/entrypoint-writer-efa.sh` | Writer entrypoint: testsrc + fetch target-info + initiator |
 | `examples/aws/entrypoint-reader-efa.sh` | Reader entrypoint: target + write target-info + gst-sink |
-| `examples/aws/kube-aws-2-nodes-efa.yaml` | K8s manifest: 2 deployments + headless service |
+| `examples/aws/kube-aws-2-nodes-efa.yaml` | K8s manifest (testsrc): 2 deployments + headless service |
+| `examples/aws/kube-aws-2-nodes-efa-nasa.yaml` | K8s manifest (NASA 4K): adds init container that downloads + transcodes NASA Earth 4K |

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <uuid.h>
 #include <CLI/CLI.hpp>
@@ -147,8 +148,12 @@ public:
         MXL_INFO("Decodebin pad: {} {}", name, padDiscarded ? "(Discarded)" : "");
     }
 
-    LoopingFilePlayer(std::string in_domain)
+    LoopingFilePlayer(std::string in_domain,
+        std::optional<uuids::uuid> in_videoFlowIdOverride = std::nullopt,
+        std::optional<uuids::uuid> in_audioFlowIdOverride = std::nullopt)
         : domain(std::move(in_domain))
+        , videoFlowIdOverride(in_videoFlowIdOverride)
+        , audioFlowIdOverride(in_audioFlowIdOverride)
     {
         // Create the MXL domain directory if it doesn't exist
         if (!fs::exists(domain))
@@ -373,7 +378,7 @@ public:
 
             std::string flowDef;
             videoGrainRate = mxlRational{fps_n, fps_d};
-            videoFlowId = createVideoFlowJson(uri, width, height, videoGrainRate, true, colorimetry, flowDef);
+            videoFlowId = createVideoFlowJson(uri, width, height, videoGrainRate, true, colorimetry, flowDef, videoFlowIdOverride);
 
             mxlFlowConfigInfo configInfo;
             bool flowCreated = false;
@@ -458,7 +463,7 @@ public:
             std::string flowDef;
             audioGrainRate = mxlRational{rate, 1};
             audioChannels = channels;
-            audioFlowId = createAudioFlowJson(uri, audioGrainRate, channels, depth, format, flowDef);
+            audioFlowId = createAudioFlowJson(uri, audioGrainRate, channels, depth, format, flowDef, audioFlowIdOverride);
 
             // The pipeline is PAUSED and the appSinkAudio should have received its preroll buffer.
             // We can try to pull this preroll sample to inspect the first decoded audio buffer
@@ -532,13 +537,13 @@ public:
 
 private:
     static uuids::uuid createVideoFlowJson(std::string const& in_uri, int in_width, int in_height, mxlRational in_rate, bool in_progressive,
-        std::string const& in_colorspace, std::string& out_flowDef)
+        std::string const& in_colorspace, std::string& out_flowDef, std::optional<uuids::uuid> in_overrideId = std::nullopt)
     {
         auto root = picojson::object{};
         auto label = std::string{"Video flow for "} + in_uri;
         root["description"] = picojson::value(label);
 
-        auto id = uuids::uuid_system_generator{}();
+        auto id = in_overrideId.value_or(uuids::uuid_system_generator{}());
         root["id"] = picojson::value(uuids::to_string(id));
         root["tags"] = picojson::value(picojson::object());
         root["format"] = picojson::value("urn:x-nmos:format:video");
@@ -584,13 +589,13 @@ private:
     }
 
     static uuids::uuid createAudioFlowJson(std::string const& in_uri, mxlRational in_rate, int ch_count, int depth, std::string const& format,
-        std::string& out_flowDef)
+        std::string& out_flowDef, std::optional<uuids::uuid> in_overrideId = std::nullopt)
     {
         auto root = picojson::object{};
         auto label = std::string{"Audio flow for "} + in_uri;
         root["description"] = picojson::value(label);
 
-        auto id = uuids::uuid_system_generator{}();
+        auto id = in_overrideId.value_or(uuids::uuid_system_generator{}());
         root["id"] = picojson::value(uuids::to_string(id));
         root["tags"] = picojson::value(picojson::object());
         root["format"] = picojson::value("urn:x-nmos:format:audio");
@@ -930,6 +935,10 @@ private:
     uuids::uuid videoFlowId;
     // The MXL audio flow id
     uuids::uuid audioFlowId;
+    // Optional CLI-provided override for the video flow UUID (deterministic deployment).
+    std::optional<uuids::uuid> videoFlowIdOverride;
+    // Optional CLI-provided override for the audio flow UUID.
+    std::optional<uuids::uuid> audioFlowIdOverride;
     // Unique pointer to video processing thread
     std::unique_ptr<std::thread> videoThreadPtr;
     // Unique pointer to audio processing thread
@@ -978,6 +987,7 @@ int main(int argc, char* argv[])
     // Command line argument parsing
     //
     std::string inputFile, domain;
+    std::string videoFlowIdStr, audioFlowIdStr;
 
     CLI::App cli{"mxl-gst-looping-filesrc"};
     auto domainOpt = cli.add_option("-d,--domain", domain, "The MXL domain directory")->required();
@@ -987,7 +997,34 @@ int main(int argc, char* argv[])
     inputOpt->required(true);
     inputOpt->check(CLI::ExistingFile);
 
+    cli.add_option("-v,--video-flow-id", videoFlowIdStr,
+        "Override the auto-generated video flow UUID (e.g. 5fbec3b1-1b0f-417d-9059-8b94a47197ed). "
+        "Useful when the consumer (mxl-gst-sink) expects a deterministic ID.");
+    cli.add_option("-a,--audio-flow-id", audioFlowIdStr,
+        "Override the auto-generated audio flow UUID.");
+
     CLI11_PARSE(cli, argc, argv);
+
+    auto videoFlowIdOverride = std::optional<uuids::uuid>{};
+    if (!videoFlowIdStr.empty())
+    {
+        videoFlowIdOverride = uuids::uuid::from_string(videoFlowIdStr);
+        if (!videoFlowIdOverride.has_value())
+        {
+            MXL_ERROR("Invalid --video-flow-id: '{}'", videoFlowIdStr);
+            return -1;
+        }
+    }
+    auto audioFlowIdOverride = std::optional<uuids::uuid>{};
+    if (!audioFlowIdStr.empty())
+    {
+        audioFlowIdOverride = uuids::uuid::from_string(audioFlowIdStr);
+        if (!audioFlowIdOverride.has_value())
+        {
+            MXL_ERROR("Invalid --audio-flow-id: '{}'", audioFlowIdStr);
+            return -1;
+        }
+    }
 
     //
     // Initialize GStreamer
@@ -1001,7 +1038,7 @@ int main(int argc, char* argv[])
     //
     // Create the Player and open the input uri
     //
-    auto player = std::make_unique<LoopingFilePlayer>(domain);
+    auto player = std::make_unique<LoopingFilePlayer>(domain, videoFlowIdOverride, audioFlowIdOverride);
     if (!player->open(inputFile))
     {
         MXL_ERROR("Failed to open input file: {}", inputFile);
