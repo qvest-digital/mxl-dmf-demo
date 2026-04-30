@@ -159,12 +159,23 @@ kubectl get pods -n kube-system | grep efa
 
 ## Step 6: Deploy the Manifest
 
-The base manifest is parameterized; deploy via the Kustomize overlay (provides
-the `mxl-config` ConfigMap with the flow UUID and pins image tags):
+Two variants. Both subscribe the reader to flow UUID `5fbec3b1-...`:
+
+| Variant | Source | Layout | Use case |
+|---|---|---|---|
+| Default (testsrc) | Synthetic test pattern (`mxl-gst-testsrc`) | Kustomize overlay | Smoke test, fabric verification |
+| NASA 4K (DMF-154) | NASA Earth 4K MP4 (looped) | Flat YAML (not yet kustomized) | Broadcaster demo, EFA throughput showcase |
 
 ```bash
 cd /path/to/mxl-dmf-demo
+
+# Default (synthetic test pattern) — kustomize overlay provides the
+# `mxl-config` ConfigMap with the flow UUID and pins image tags
 kubectl apply -k examples/aws/kustomize/2-nodes/
+
+# OR — NASA 4K Earth showcase (init container downloads + transcodes ~2 GB
+# on first start; ~3 min)
+kubectl apply -f examples/aws/kube-aws-2-nodes-efa-nasa.yaml
 ```
 
 Check deployment:
@@ -172,6 +183,8 @@ Check deployment:
 ```bash
 kubectl get pods -o wide
 kubectl get svc
+# For NASA variant, follow the init container's progress:
+kubectl logs deployment/writer-media-function-efa -c prepare-nasa-video -f
 ```
 
 Verify:
@@ -332,3 +345,4 @@ aws ecr delete-repository --repository-name mxl-reader-efa --force --region $AWS
 | `examples/aws/kustomize/2-nodes/kustomization.yaml` | Kustomize overlay: pins image tags, provides `mxl-config` ConfigMap |
 | `examples/aws/kustomize/1-node/kube-aws-1-node-efa.yaml` | K8s base manifest for 1-node variant (parameterized) |
 | `examples/aws/kustomize/1-node/kustomization.yaml` | Kustomize overlay for 1-node variant |
+| `examples/aws/kube-aws-2-nodes-efa-nasa.yaml` | K8s manifest (NASA 4K, flat YAML): adds init container that downloads + transcodes NASA Earth 4K |
