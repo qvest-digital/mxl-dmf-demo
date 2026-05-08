@@ -44,12 +44,14 @@ namespace
         std::uint64_t frameWidth;
         std::uint64_t frameHeight;
         std::int64_t offset;
+        std::uint16_t srtPort;
 
         [[nodiscard]]
         std::string display() const
         {
             return fmt::format(
-                "frameWidth={} frameHeight={} frameRate={}/{} offset={}", frameWidth, frameHeight, frameRate.numerator, frameRate.denominator, offset);
+                "frameWidth={} frameHeight={} frameRate={}/{} offset={} srtPort={}",
+                frameWidth, frameHeight, frameRate.numerator, frameRate.denominator, offset, srtPort);
         }
     };
 
@@ -242,12 +244,12 @@ namespace
                 "video/x-h264,profile=baseline ! "
                 "mpegtsmux ! "
                 "queue leaky=downstream max-size-buffers=3 max-size-time=1000000000 ! "
-                "srtsink uri=\"srt://:5000?mode=listener\"",
+                "srtsink uri=\"srt://:{}?mode=listener\"",
                 _config.frameWidth,
                 _config.frameHeight,
                 _config.frameRate.numerator,
                 _config.frameRate.denominator,
-                _config.offset);
+                _config.srtPort);
 
             MXL_INFO("Generating following GStreamer video pipeline (SRT Edition) -> {}", pipelineDesc);
             launchPipeline(pipelineDesc);
@@ -912,6 +914,10 @@ namespace
             "means you are delaying video.");
         audioVideoOffsetOpt->default_val(0);
 
+        auto srtPort = std::uint16_t{};
+        auto srtPortOpt = app.add_option("--srt-port", srtPort, "TCP/UDP port for the SRT listener.");
+        srtPortOpt->default_val(static_cast<std::uint16_t>(5000));
+
         auto ptsOffset = std::optional<std::uint64_t>{};
         auto ptsOffsetOpt = app.add_option("--pts-offset",
             ptsOffset,
@@ -957,6 +963,7 @@ namespace
                             .frameWidth = static_cast<std::uint64_t>(frameWidth),
                             .frameHeight = static_cast<std::uint64_t>(frameHeight),
                             .offset = playbackDelay + ((audioVideoOffset < 0) ? -audioVideoOffset : 0LL),
+                            .srtPort = srtPort,
                         };
 
                         auto pipeline = VideoPipeline{videoConfig};
