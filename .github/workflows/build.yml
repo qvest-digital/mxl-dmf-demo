@@ -10,6 +10,11 @@ on:
       - feature/**
   pull_request:
   workflow_dispatch:
+    inputs:
+      force_ecr_deploy:
+        description: "Push images to ECR with a verification-only tag (dual-stream-test). Use to validate non-qvest branches in AWS without polluting :latest. Does NOT update :latest; only the test tag."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,7 +28,7 @@ jobs:
   build_and_deploy:
     name: Build and Deploy MXL EFA Images
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name == 'qvest' && github.event_name == 'push' && 'aws' || '' }}
+    environment: ${{ ((github.ref_name == 'qvest' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.force_ecr_deploy)) && 'aws' || '' }}
     strategy:
       matrix:
         compiler: [Linux-GCC-Release] # Matching your multi-stage Dockerfile setup
@@ -31,7 +36,10 @@ jobs:
     env:
       DOCKER_BUILDKIT: 1
       AWS_REGION: eu-central-1
-      DEPLOY: ${{ github.ref_name == 'qvest' && github.event_name == 'push' }}
+      # ECR push happens for: qvest pushes (production), or workflow_dispatch with force_ecr_deploy=true (verification).
+      DEPLOY: ${{ (github.ref_name == 'qvest' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.force_ecr_deploy) }}
+      # :latest is only updated on qvest (production); verification builds get a fixed test tag only.
+      IS_QVEST_DEPLOY: ${{ github.ref_name == 'qvest' && github.event_name == 'push' }}
 
     steps:
       - name: Checkout repository
@@ -56,15 +64,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Determine the tag based on the branch
+      # Determine the tag based on the branch / event
       - name: Set Image Tag
         id: vars
         run: |
           if [[ "${{ github.ref_name }}" == "qvest" ]]; then
-            # SemVer tag for main branch merges
+            # SemVer tag for production qvest builds
             echo "tag=v1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.force_ecr_deploy }}" == "true" ]]; then
+            # Fixed verification tag for non-qvest force-ECR builds. Stable across rebuilds so
+            # consumers (k8s manifests in mxl-dmf-terraform) can pin to it without chasing SHAs.
+            echo "tag=dual-stream-test" >> $GITHUB_OUTPUT
           else
-            # SHA tag for feature branches
+            # SHA tag for feature branches (GHCR only, no ECR)
             echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
           echo "gh_base=ghcr.io/${{ github.repository_owner }}" >> $GITHUB_OUTPUT
@@ -100,9 +112,12 @@ jobs:
           docker push ${{ steps.vars.outputs.gh_base }}/mxl-writer:${TAG}
           if [[ "${{ env.DEPLOY }}" == "true" ]]; then
             docker tag ${{ steps.vars.outputs.gh_base }}/mxl-writer:${TAG} ${ECR_REGISTRY}/${REPO}:${TAG}
-            docker tag ${{ steps.vars.outputs.gh_base }}/mxl-writer:${TAG} ${ECR_REGISTRY}/${REPO}:latest
             docker push ${ECR_REGISTRY}/${REPO}:${TAG}
-            docker push ${ECR_REGISTRY}/${REPO}:latest
+            # :latest is only updated on qvest pushes (production); verification builds keep :latest untouched.
+            if [[ "${{ env.IS_QVEST_DEPLOY }}" == "true" ]]; then
+              docker tag ${{ steps.vars.outputs.gh_base }}/mxl-writer:${TAG} ${ECR_REGISTRY}/${REPO}:latest
+              docker push ${ECR_REGISTRY}/${REPO}:latest
+            fi
           fi
 
       # Step 3: Build and Push Reader Image (Inherits from Base)
@@ -120,7 +135,10 @@ jobs:
           docker push ${{ steps.vars.outputs.gh_base }}/mxl-reader:${TAG}
           if [[ "${{ env.DEPLOY }}" == "true" ]]; then
             docker tag ${{ steps.vars.outputs.gh_base }}/mxl-reader:${TAG} ${ECR_REGISTRY}/${REPO}:${TAG}
-            docker tag ${{ steps.vars.outputs.gh_base }}/mxl-reader:${TAG} ${ECR_REGISTRY}/${REPO}:latest
             docker push ${ECR_REGISTRY}/${REPO}:${TAG}
-            docker push ${ECR_REGISTRY}/${REPO}:latest
+            # :latest is only updated on qvest pushes (production); verification builds keep :latest untouched.
+            if [[ "${{ env.IS_QVEST_DEPLOY }}" == "true" ]]; then
+              docker tag ${{ steps.vars.outputs.gh_base }}/mxl-reader:${TAG} ${ECR_REGISTRY}/${REPO}:latest
+              docker push ${ECR_REGISTRY}/${REPO}:latest
+            fi
           fi
