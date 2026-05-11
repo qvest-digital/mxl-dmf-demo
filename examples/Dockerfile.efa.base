@@ -4,13 +4,14 @@
 FROM debian:trixie-slim AS base
 
 RUN apt-get update && apt-get install -y \
-   gstreamer1.0-plugins-good \
-   gstreamer1.0-plugins-base \
-   gstreamer1.0-plugins-bad \
-   curl zip unzip tar \
-   dumb-init \
-   librdmacm1t64 libibverbs1 \
-   && rm -r /var/lib/apt/lists/*
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    curl zip unzip tar \
+    dumb-init \
+    librdmacm1t64 libibverbs1 \
+    && rm -r /var/lib/apt/lists/*
 
 RUN useradd -m mxl
 
