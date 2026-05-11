@@ -18,6 +18,8 @@ services:
       FI_PROVIDER: tcp
     volumes:
       - mxl-domain:/domain
+    ports:
+      - "5000:5000/udp"
     depends_on:
       - writer
 
