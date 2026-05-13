@@ -5,17 +5,25 @@
 // live as tmpfs-backed ring buffers; readers and writers communicate via
 // memory mapping and futex wakeups, with no copies in the data path.
 //
-// This binding currently exposes the reader side of the discrete-flow API
-// (video and data grains). Writers and continuous (audio) flows are stubbed
-// and will be filled in once the reader path is proven end-to-end.
+// The binding covers the full libmxl public API:
 //
-// Build requirements:
+//   - Instance management (NewInstance, IsTmpFs, GarbageCollect, FlowDef, ...)
+//   - Discrete-flow reads:  Reader.GetGrain[Slice]([NonBlocking])
+//   - Discrete-flow writes: Writer.OpenGrain / Commit / Cancel
+//   - Continuous-flow reads:  Reader.GetSamples[NonBlocking]
+//   - Continuous-flow writes: Writer.OpenSamples / Commit / Cancel
+//   - Synchronization groups: Instance.NewSyncGroup
+//   - Time/index helpers: Now, CurrentIndex, IndexToTimestamp, ...
+//
+// # Build requirements
 //
 //   - libmxl must be installed and visible to pkg-config. Run
-//     `pkg-config --cflags --libs libmxl` to verify before `go build`.
+//     `pkg-config --cflags --libs libmxl` to verify before `go build`;
+//     it should return both -I/-L flags and `-lmxl -lmxl-common` plus
+//     the dependent spdlog/fmt libraries.
 //   - cgo must be enabled (CGO_ENABLED=1, default on native builds).
 //
-// Typical usage:
+// # Typical usage
 //
 //	inst, err := mxl.NewInstance("/dev/shm/mxl", "")
 //	if err != nil { return err }
@@ -27,14 +35,18 @@
 //
 //	info, _ := r.Info()
 //	for {
-//	    idx := mxl.CurrentIndex(info.Config.GrainRate)
+//	    idx := mxl.CurrentIndex(info.Config.Common.GrainRate)
 //	    g, err := r.GetGrain(idx, 200*time.Millisecond)
 //	    if errors.Is(err, mxl.ErrTimeout) { continue }
 //	    if err != nil { return err }
 //	    handle(g.Payload) // borrowed; do not retain past next read
 //	}
 //
-// Payload slices returned by reads alias shared memory directly. They are
-// valid only until the next read on the same Reader; callers that need to
-// retain data must copy it (use Grain.Copy()).
+// # Borrowed payloads
+//
+// Byte slices returned by reads (Grain.Payload, SamplesView fragments) and
+// by writer-side OpenGrain/OpenSamples aliase libmxl's shared memory
+// directly. They are only valid until the next read, the matching
+// Commit/Cancel, or the Reader/Writer being closed. Use Grain.Copy() or
+// SamplesView.CopyChannel() to retain data.
 package mxl
