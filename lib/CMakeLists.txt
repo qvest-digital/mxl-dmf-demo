@@ -44,6 +44,11 @@ target_compile_features(mxl
         PRIVATE
             cxx_std_20
     )
+if(APPLE)
+    set(_mxl_install_rpath "@loader_path")
+else()
+    set(_mxl_install_rpath "$ORIGIN")
+endif()
 set_target_properties(mxl
         PROPERTIES
             POSITION_INDEPENDENT_CODE ${MXL_POSITION_INDEPENDENT_CODE}
@@ -54,6 +59,10 @@ set_target_properties(mxl
             CXX_EXTENSIONS            OFF
             VERSION                   "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
             SOVERSION                 "${PROJECT_VERSION_MAJOR}"
+            # libmxl.so has a runtime dep on its sibling libmxl-common.so; with
+            # $ORIGIN baked in, consumers don't need LD_LIBRARY_PATH (or an rpath
+            # of their own) just to find libmxl-common.
+            INSTALL_RPATH             "${_mxl_install_rpath}"
     )
 
 target_sources(mxl

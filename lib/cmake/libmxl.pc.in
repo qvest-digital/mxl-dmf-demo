@@ -6,8 +6,20 @@ includedir=@MXL_PKGCONFIG_INCLUDEDIR@
 Name: libmxl
 Version: @PROJECT_VERSION@
 Description: Media eXchange Layer SDK
-Libs: -L${libdir} -lmxl
-Requires.private: spdlog
-Libs.private: -pthread -lmxl-common -lstdc++ -lm
+# Libs lists every shared library that a dynamic-link consumer must put on the
+# linker command line. With modern toolchain defaults (--no-copy-dt-needed-
+# entries, --as-needed), the linker will not chase DT_NEEDED entries inside
+# libmxl.so to satisfy the consumer's undefined symbols, so libmxl-common must
+# be named here explicitly. spdlog and fmt are referenced from libmxl.so via
+# inlined headers and must therefore also be reachable for the link.
+#
+# The trailing -Wl,-rpath,${libdir} bakes libmxl's install dir into the
+# consumer binary's runtime search path. Combined with libmxl.so's own
+# INSTALL_RPATH=$ORIGIN, this means "pkg-config --libs libmxl" alone is enough
+# to build a runnable binary -- no LD_LIBRARY_PATH or CGO_LDFLAGS rpath dance
+# needed at the consumer.
+Libs: -L${libdir} -lmxl -lmxl-common -Wl,-rpath,${libdir}
+Requires: spdlog fmt
+Libs.private: -pthread -lstdc++ -lm
 Cflags: -I${includedir}
 
