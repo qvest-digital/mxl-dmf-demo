@@ -74,7 +74,28 @@ namespace mxl::lib::fabrics::ofi
         std::uint32_t eventType;
         ::fi_eq_entry entry;
 
-        auto const ret = fi_eq_sread(_raw, &eventType, &entry, sizeof(entry), timeoutMs, 0);
+        // libfabric's util_wait_fd_run surfaces -FI_EINTR as a fatal "poll
+        // failed" in release builds, even though the condition is fully
+        // recoverable. Any signal delivered to the thread — notably the
+        // Go runtime's SIGURG preemption — triggers this. Retry with the
+        // remaining timeout so the caller's contract is honoured.
+        auto const deadline = std::chrono::steady_clock::now() + timeout;
+        ssize_t ret;
+        for (;;)
+        {
+            ret = fi_eq_sread(_raw, &eventType, &entry, sizeof(entry), timeoutMs, 0);
+            if (ret != -FI_EINTR)
+            {
+                break;
+            }
+            auto const remaining =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                return std::nullopt;
+            }
+            timeoutMs = remaining;
+        }
 
         return handleReadResult(ret, eventType, entry);
     }
