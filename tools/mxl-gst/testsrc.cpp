@@ -228,6 +228,12 @@ namespace
             // to an epoch grain. To achieve this, we set the base time to the
             // next grain timestamp.
             _mxlBaseTime = mxlIndexToTimestamp(&_grainRate, mxlGetCurrentIndex(&_grainRate) + 1U);
+            // Frame duration derived from the actual grain rate so the
+            // PTS-wrap accounting (see pull()) handles non-29.97 rates
+            // — 25/1 PAL, 60/1 progressive, anything else the flow JSON
+            // declares — without a per-loop drift.
+            _frameDurationNs = mxlIndexToTimestamp(&_grainRate, 1U) -
+                               mxlIndexToTimestamp(&_grainRate, 0U);
             MXL_INFO("Staring pipeline with base time: {} ns", _mxlBaseTime);
         }
 
@@ -397,7 +403,12 @@ namespace
         // PTS continuity across loop boundaries — see pull().
         std::uint64_t _ptsWrapOffset{0};
         std::uint64_t _lastEmittedPts{0};
-        std::uint64_t _frameDurationNs{33'366'667};  // 30000/1001 ≈ 33.37 ms
+        // One frame in ns. Filled at start() from the actual grain rate
+        // so the PTS-wrap accounting in pull() works for any rate the
+        // flow JSON declares. The 0 default is only seen when pull()
+        // runs before start() — never happens in the normal flow but
+        // makes the field safe to read either way.
+        std::uint64_t _frameDurationNs{0};
         GstElement* _appSink;
         std::uint64_t _mxlBaseTime;
     };
