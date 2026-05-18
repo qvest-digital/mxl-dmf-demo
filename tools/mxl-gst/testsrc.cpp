@@ -244,9 +244,23 @@ namespace
                         ::gst_buffer_ref(buffer);
                         result = GstreamerSampleRef{sample, buffer};
 
-                        // Change the PTS to TAI time and include preroll delay
+                        // PTS-wrap accounting: file sources (filesrc +
+                        // EOS-seek loop) re-emit PTS=0 at each loop
+                        // boundary, which the MXL writer's monotonic
+                        // check rejects as "Time went backward" and
+                        // halts. Detect the wrap, advance an internal
+                        // offset past the last seen PTS plus one frame,
+                        // and stamp the buffer continuously. Test
+                        // patterns whose PTS is always monotonic see no
+                        // change (the offset stays at zero forever).
                         auto const bufferTs = GST_BUFFER_PTS(buffer);
-                        GST_BUFFER_PTS(buffer) = _mxlBaseTime + bufferTs;
+                        if (bufferTs + _ptsWrapOffset <= _lastEmittedPts && _lastEmittedPts != 0)
+                        {
+                            _ptsWrapOffset = _lastEmittedPts - bufferTs + _frameDurationNs;
+                        }
+                        auto const adjustedTs = bufferTs + _ptsWrapOffset;
+                        _lastEmittedPts = adjustedTs;
+                        GST_BUFFER_PTS(buffer) = _mxlBaseTime + adjustedTs;
                     }
                     else
                     {
@@ -380,6 +394,10 @@ namespace
         GstElement* _pipeline;
         GMainLoop* _loopMain{nullptr};
         GThread* _loopThread{nullptr};
+        // PTS continuity across loop boundaries — see pull().
+        std::uint64_t _ptsWrapOffset{0};
+        std::uint64_t _lastEmittedPts{0};
+        std::uint64_t _frameDurationNs{33'366'667};  // 30000/1001 ≈ 33.37 ms
         GstElement* _appSink;
         std::uint64_t _mxlBaseTime;
     };
@@ -408,15 +426,13 @@ namespace
                     _config.frameRate.numerator,
                     _config.frameRate.denominator)
                 : fmt::format(
-                    // multifilesrc + loop=true restarts the file at EOS
-                    // at the source level — no pipeline-wide seek that
-                    // would rewind PTS and trip MXL's monotonic
-                    // timestamp check ("Time went backward"). is-live +
-                    // do-timestamp force the element to stamp each
-                    // outgoing buffer with the gst pipeline clock's
-                    // running time, so PTS stays monotonic across
-                    // loop boundaries.
-                    "multifilesrc name=filesrc location=\"{}\" loop=true do-timestamp=true ! "
+                    // filesrc + decodebin + videorate paces itself via
+                    // the default appsink sync=true (no clocksync
+                    // needed). EOS-driven seek-to-zero re-runs the
+                    // file; the PTS-wrap accounting in pull() bridges
+                    // the discontinuity so the MXL writer doesn't see
+                    // "Time went backward".
+                    "filesrc name=filesrc location=\"{}\" ! "
                     "decodebin ! "
                     "videoconvert ! "
                     "videoscale ! "
@@ -442,10 +458,14 @@ namespace
             MXL_INFO("Generating following GStreamer video pipeline -> {}", pipelineDesc);
             launchPipeline(pipelineDesc, _config.frameRate);
 
-            // Looping is handled by multifilesrc loop=true at the source
-            // level; no app-side bus EOS handler is needed. Leaving the
-            // installLoopOnEos hook in the codebase in case a future
-            // pipeline (e.g., a non-loopable source element) wants it.
+            // File-backed pipelines: seek to t=0 on EOS so the snippet
+            // loops. The pull-side PTS-wrap accounting handles the
+            // resulting source-PTS reset so the MXL writer sees a
+            // continuous timestamp stream.
+            if (!_config.inputFile.empty())
+            {
+                installLoopOnEos();
+            }
 
             // Configure appsink
             auto const appSink = getAppSink();
