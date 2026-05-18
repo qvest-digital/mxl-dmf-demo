@@ -408,7 +408,15 @@ namespace
                     _config.frameRate.numerator,
                     _config.frameRate.denominator)
                 : fmt::format(
-                    "filesrc name=filesrc location=\"{}\" ! "
+                    // multifilesrc + loop=true restarts the file at EOS
+                    // at the source level — no pipeline-wide seek that
+                    // would rewind PTS and trip MXL's monotonic
+                    // timestamp check ("Time went backward"). is-live +
+                    // do-timestamp force the element to stamp each
+                    // outgoing buffer with the gst pipeline clock's
+                    // running time, so PTS stays monotonic across
+                    // loop boundaries.
+                    "multifilesrc name=filesrc location=\"{}\" loop=true is-live=true do-timestamp=true ! "
                     "decodebin ! "
                     "videoconvert ! "
                     "videoscale ! "
@@ -434,15 +442,10 @@ namespace
             MXL_INFO("Generating following GStreamer video pipeline -> {}", pipelineDesc);
             launchPipeline(pipelineDesc, _config.frameRate);
 
-            // For file input, install a bus watch that seeks back to t=0
-            // on EOS so the snippet loops forever instead of stopping at
-            // the first end-of-stream. Test-pattern mode has no EOS so
-            // this is a no-op there — it's harmless to install always but
-            // we gate it on inputFile to keep intent explicit.
-            if (!_config.inputFile.empty())
-            {
-                installLoopOnEos();
-            }
+            // Looping is handled by multifilesrc loop=true at the source
+            // level; no app-side bus EOS handler is needed. Leaving the
+            // installLoopOnEos hook in the codebase in case a future
+            // pipeline (e.g., a non-loopable source element) wants it.
 
             // Configure appsink
             auto const appSink = getAppSink();
