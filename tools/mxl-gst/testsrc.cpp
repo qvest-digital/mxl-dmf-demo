@@ -38,17 +38,25 @@ namespace
         std::uint64_t pattern{0};
         std::string textOverlay{"EBU DMF MXL"};
         std::uint32_t sliceSize;
+        // When non-empty, the pipeline reads frames from this file path
+        // instead of the videotestsrc test pattern. The file is treated
+        // as a standard container (MP4/MKV/TS) decoded via decodebin,
+        // scaled/converted to v210 to match the rest of the chain, and
+        // looped on EOS via a bus watch that issues a seek to t=0.
+        // `pattern` is ignored when this is set.
+        std::string inputFile{};
 
         [[nodiscard]]
         std::string display() const
         {
-            return fmt::format("frameWidth={} frameHeight={} frameRate={}/{} pattern={} textOverlay={}",
+            return fmt::format("frameWidth={} frameHeight={} frameRate={}/{} pattern={} textOverlay={} inputFile={}",
                 frameWidth,
                 frameHeight,
                 frameRate.numerator,
                 frameRate.denominator,
                 pattern,
-                textOverlay);
+                textOverlay,
+                inputFile);
         }
     };
 
@@ -220,6 +228,12 @@ namespace
             // to an epoch grain. To achieve this, we set the base time to the
             // next grain timestamp.
             _mxlBaseTime = mxlIndexToTimestamp(&_grainRate, mxlGetCurrentIndex(&_grainRate) + 1U);
+            // Frame duration derived from the actual grain rate so the
+            // PTS-wrap accounting (see pull()) handles non-29.97 rates
+            // — 25/1 PAL, 60/1 progressive, anything else the flow JSON
+            // declares — without a per-loop drift.
+            _frameDurationNs = mxlIndexToTimestamp(&_grainRate, 1U) -
+                               mxlIndexToTimestamp(&_grainRate, 0U);
             MXL_INFO("Staring pipeline with base time: {} ns", _mxlBaseTime);
         }
 
@@ -236,9 +250,23 @@ namespace
                         ::gst_buffer_ref(buffer);
                         result = GstreamerSampleRef{sample, buffer};
 
-                        // Change the PTS to TAI time and include preroll delay
+                        // PTS-wrap accounting: file sources (filesrc +
+                        // EOS-seek loop) re-emit PTS=0 at each loop
+                        // boundary, which the MXL writer's monotonic
+                        // check rejects as "Time went backward" and
+                        // halts. Detect the wrap, advance an internal
+                        // offset past the last seen PTS plus one frame,
+                        // and stamp the buffer continuously. Test
+                        // patterns whose PTS is always monotonic see no
+                        // change (the offset stays at zero forever).
                         auto const bufferTs = GST_BUFFER_PTS(buffer);
-                        GST_BUFFER_PTS(buffer) = _mxlBaseTime + bufferTs;
+                        if (bufferTs + _ptsWrapOffset <= _lastEmittedPts && _lastEmittedPts != 0)
+                        {
+                            _ptsWrapOffset = _lastEmittedPts - bufferTs + _frameDurationNs;
+                        }
+                        auto const adjustedTs = bufferTs + _ptsWrapOffset;
+                        _lastEmittedPts = adjustedTs;
+                        GST_BUFFER_PTS(buffer) = _mxlBaseTime + adjustedTs;
                     }
                     else
                     {
@@ -259,6 +287,12 @@ namespace
 
         ~GstreamerPipeline()
         {
+            if (_loopMain)
+            {
+                ::g_main_loop_quit(_loopMain);
+                if (_loopThread) ::g_thread_join(_loopThread);
+                ::g_main_loop_unref(_loopMain);
+            }
             if (_appSink)
             {
                 if (GST_OBJECT_REFCOUNT_VALUE(_appSink))
@@ -325,9 +359,56 @@ namespace
             return _appSink;
         }
 
+        // Loop-on-EOS for file-backed pipelines. gst_bus_add_watch only
+        // fires from a running GLib main loop, so we spin up a private
+        // one on a dedicated thread; without that the handler is
+        // installed but never invoked and the file plays once then
+        // stalls (the MxlFlowInactive alert downstream picks it up).
+        void installLoopOnEos()
+        {
+            if (_pipeline == nullptr) return;
+            auto* bus = ::gst_element_get_bus(_pipeline);
+            if (bus == nullptr) return;
+            ::gst_bus_add_watch(bus, &GstreamerPipeline::on_bus_message, _pipeline);
+            ::gst_object_unref(bus);
+            _loopMain = ::g_main_loop_new(nullptr, FALSE);
+            _loopThread = ::g_thread_new(
+                "mxl-loop",
+                [](gpointer data) -> gpointer
+                {
+                    ::g_main_loop_run(static_cast<GMainLoop*>(data));
+                    return nullptr;
+                },
+                _loopMain);
+        }
+
     private:
+        static gboolean on_bus_message(GstBus* /*bus*/, GstMessage* message, gpointer user_data)
+        {
+            if (GST_MESSAGE_TYPE(message) != GST_MESSAGE_EOS) return TRUE;
+            auto* pipeline = GST_ELEMENT(user_data);
+            MXL_INFO("Pipeline reached EOS, seeking to t=0 to loop input file");
+            ::gst_element_seek_simple(
+                pipeline,
+                GST_FORMAT_TIME,
+                static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+                0);
+            return TRUE;
+        }
+
         mxlRational _grainRate;
         GstElement* _pipeline;
+        GMainLoop* _loopMain{nullptr};
+        GThread* _loopThread{nullptr};
+        // PTS continuity across loop boundaries — see pull().
+        std::uint64_t _ptsWrapOffset{0};
+        std::uint64_t _lastEmittedPts{0};
+        // One frame in ns. Filled at start() from the actual grain rate
+        // so the PTS-wrap accounting in pull() works for any rate the
+        // flow JSON declares. The 0 default is only seen when pull()
+        // runs before start() — never happens in the normal flow but
+        // makes the field safe to read either way.
+        std::uint64_t _frameDurationNs{0};
         GstElement* _appSink;
         std::uint64_t _mxlBaseTime;
     };
@@ -341,24 +422,61 @@ namespace
         {
             MXL_INFO("Creating video pipeline with config: {}", _config.display());
 
+            // Source-element selection: filesrc+decodebin when an input
+            // file is configured, videotestsrc otherwise. The rest of the
+            // pipeline (textoverlay, clockoverlay, format conversion to
+            // v210, appsink) is shared so the downstream MXL writer sees
+            // the same shape either way.
+            auto sourceChain = _config.inputFile.empty()
+                ? fmt::format(
+                    "videotestsrc name=videotestsrc is-live=true do-timestamp=true pattern={} ! "
+                    "video/x-raw,format=v210,width={},height={},framerate={}/{}",
+                    _config.pattern,
+                    _config.frameWidth,
+                    _config.frameHeight,
+                    _config.frameRate.numerator,
+                    _config.frameRate.denominator)
+                : fmt::format(
+                    // filesrc + decodebin + videorate paces itself via
+                    // the default appsink sync=true (no clocksync
+                    // needed). EOS-driven seek-to-zero re-runs the
+                    // file; the PTS-wrap accounting in pull() bridges
+                    // the discontinuity so the MXL writer doesn't see
+                    // "Time went backward".
+                    "filesrc name=filesrc location=\"{}\" ! "
+                    "decodebin ! "
+                    "videoconvert ! "
+                    "videoscale ! "
+                    "videorate ! "
+                    "video/x-raw,format=v210,width={},height={},framerate={}/{}",
+                    _config.inputFile,
+                    _config.frameWidth,
+                    _config.frameHeight,
+                    _config.frameRate.numerator,
+                    _config.frameRate.denominator);
+
             auto pipelineDesc = fmt::format(
-                "videotestsrc name=videotestsrc is-live=true do-timestamp=true pattern={} ! "
-                "video/x-raw,format=v210,width={},height={},framerate={}/{} ! "
+                "{} ! "
                 "textoverlay text=\"{}\" font-desc=\"Sans, 36\" ! "
                 "clockoverlay ! "
                 "videoconvert ! "
                 "videoscale ! "
                 "queue ! "
                 "appsink name=appsink ",
-                _config.pattern,
-                _config.frameWidth,
-                _config.frameHeight,
-                _config.frameRate.numerator,
-                _config.frameRate.denominator,
+                sourceChain,
                 _config.textOverlay);
 
             MXL_INFO("Generating following GStreamer video pipeline -> {}", pipelineDesc);
             launchPipeline(pipelineDesc, _config.frameRate);
+
+            // File-backed pipelines: seek to t=0 on EOS so the snippet
+            // loops. The pull-side PTS-wrap accounting handles the
+            // resulting source-PTS reset so the MXL writer sees a
+            // continuous timestamp stream.
+            if (!_config.inputFile.empty())
+            {
+                installLoopOnEos();
+            }
 
             // Configure appsink
             auto const appSink = getAppSink();
@@ -844,6 +962,13 @@ int main(int argc, char** argv)
     auto groupHintOpt = app.add_option("-g, --group-hint", groupHint, "The group-hint value to use in the flow json definition");
     groupHintOpt->default_val("mxl-gst-testsrc-group");
 
+    auto inputFile = std::string{};
+    auto inputFileOpt = app.add_option("-i,--input-file", inputFile,
+        "Path to a media file (MP4/MKV/TS/...) to loop instead of generating a test pattern. "
+        "When set, --pattern is ignored; the file is decoded, scaled/converted to v210 to match "
+        "the flow JSON, and seeks back to t=0 on EOS so the snippet loops forever.");
+    inputFileOpt->check(CLI::ExistingFile);
+
     CLI11_PARSE(app, argc, argv);
 
     ::gst_init(nullptr, nullptr);
@@ -878,7 +1003,8 @@ int main(int argc, char** argv)
                         .frameRate = json_utils::getRational(flowNmos, "grain_rate"),
                         .pattern = pattern_map.at(pattern),
                         .textOverlay = textOverlay,
-                        .sliceSize = media_utils::getV210LineLength(frameWidth)};
+                        .sliceSize = media_utils::getV210LineLength(frameWidth),
+                        .inputFile = inputFile};
 
                     auto gstPipeline = VideoPipeline{gstConfig};
 
