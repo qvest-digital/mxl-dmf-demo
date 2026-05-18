@@ -267,6 +267,12 @@ namespace
 
         ~GstreamerPipeline()
         {
+            if (_loopMain)
+            {
+                ::g_main_loop_quit(_loopMain);
+                if (_loopThread) ::g_thread_join(_loopThread);
+                ::g_main_loop_unref(_loopMain);
+            }
             if (_appSink)
             {
                 if (GST_OBJECT_REFCOUNT_VALUE(_appSink))
@@ -333,13 +339,11 @@ namespace
             return _appSink;
         }
 
-        // Loop-on-EOS for file-backed pipelines. Registers an async bus
-        // watch that, when EOS travels up the bus, seeks the pipeline
-        // back to t=0 and stays in PLAYING. The watch runs on the
-        // default GLib main context but we don't run a main loop here —
-        // gst's source-controller pushes bus messages on the streaming
-        // thread, so the seek happens off the appsink path and doesn't
-        // stall the MXL writer's grain consumption.
+        // Loop-on-EOS for file-backed pipelines. gst_bus_add_watch only
+        // fires from a running GLib main loop, so we spin up a private
+        // one on a dedicated thread; without that the handler is
+        // installed but never invoked and the file plays once then
+        // stalls (the MxlFlowInactive alert downstream picks it up).
         void installLoopOnEos()
         {
             if (_pipeline == nullptr) return;
@@ -347,6 +351,15 @@ namespace
             if (bus == nullptr) return;
             ::gst_bus_add_watch(bus, &GstreamerPipeline::on_bus_message, _pipeline);
             ::gst_object_unref(bus);
+            _loopMain = ::g_main_loop_new(nullptr, FALSE);
+            _loopThread = ::g_thread_new(
+                "mxl-loop",
+                [](gpointer data) -> gpointer
+                {
+                    ::g_main_loop_run(static_cast<GMainLoop*>(data));
+                    return nullptr;
+                },
+                _loopMain);
         }
 
     private:
@@ -365,6 +378,8 @@ namespace
 
         mxlRational _grainRate;
         GstElement* _pipeline;
+        GMainLoop* _loopMain{nullptr};
+        GThread* _loopThread{nullptr};
         GstElement* _appSink;
         std::uint64_t _mxlBaseTime;
     };
