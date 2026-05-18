@@ -416,7 +416,7 @@ namespace
                     // outgoing buffer with the gst pipeline clock's
                     // running time, so PTS stays monotonic across
                     // loop boundaries.
-                    "multifilesrc name=filesrc location=\"{}\" loop=true is-live=true do-timestamp=true ! "
+                    "multifilesrc name=filesrc location=\"{}\" loop=true do-timestamp=true ! "
                     "decodebin ! "
                     "videoconvert ! "
                     "videoscale ! "
