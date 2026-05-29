@@ -1,88 +1,26 @@
 # SPDX-FileCopyrightText: 2025 Contributors to the Media eXchange Layer project.
 # SPDX-License-Identifier: Apache-2.0
 #
-# mxl-writer image rebuilt against upstream mxl@3518992 + libfabric 2.4 so
-# its libmxl ABI matches what the mxl-k8s gateway DaemonSet (qvest-digital/
-# mxl-k8s gateway image v1.0.0-rc.4, runtime base jonasohland/mxl:
-# 3518992-fabrics-efa) loads at runtime.
+# mxl-writer image that reuses jonasohland's prebuilt libmxl so the binary
+# ABI matches the mxl-k8s gateway (which runs FROM the same image). This
+# is the simpler, guaranteed-compatible variant of the earlier from-source
+# attempt: no compiler-flag, no vcpkg-version, no libfabric-build drift —
+# the writer loads the exact same .so the gateway does.
 #
-# Why a fresh image: the regular mxl-writer image bakes this branch's
-# vendored libmxl (5703b41 + custom shm/fabric patches), which the gateway
-# rejects with `mxlCreateFlowReader: mxl: unknown error (code 1)`.
-# Aligning on upstream commit 3518992 — the same commit jonasohland's image
-# was built on — lets the gateway open the writer's flow on the source
-# node and propagate grains to consumers.
+# jonasohland/mxl:3518992-fabrics-efa ships:
+#   - libmxl.so + libmxl-fabrics.so (built from dmf-mxl/mxl @ 3518992 +
+#     Jonas's read-only-mmap patch, see dmf-mxl/mxl#516)
+#   - libfabric 2.4 with the EFA provider (Amazon EFA installer's .debs)
+#   - the upstream tools/ binaries: mxl-gst-testsrc, mxl-info, etc.
 #
-# Trade-off: this image does NOT carry the testsrc --input-file work that
-# feature/testsrc-file-input added. It uses upstream mxl-gst-testsrc which
-# only produces test patterns from -p/--pattern. That's enough for the
-# multiviewer's 9-tile MXL showcase (each tile gets its own pattern); the
-# MP4-loop tile reverts to a test pattern until upstream picks up the
-# --input-file flag.
+# All we add on top is GStreamer's plugins and the NMOS flow JSON template
+# that mxl-gst-testsrc reads.
 
-# ── Stage 1: libfabric 2.4 with EFA provider ─────────────────────────────────
-# Matches the AWS EFA installer's libfabric and the gateway runtime, so
-# fi_getinfo doesn't return "provider efa output empty list".
-FROM debian:trixie-slim AS libfabric-build
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential libtool autoconf automake \
-        libibverbs-dev librdmacm-dev ibverbs-providers \
-        git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /tmp
-RUN git clone --depth 1 --branch v2.4.0 https://github.com/ofiwg/libfabric.git \
-    && cd libfabric \
-    && ./autogen.sh \
-    && ./configure --prefix=/usr --enable-efa \
-    && make -j"$(nproc)" \
-    && make install \
-    && ldconfig
-
-# ── Stage 2: build upstream libmxl + mxl-gst-testsrc at commit 3518992 ──────
-FROM debian:trixie-slim AS mxl-builder
-ARG MXL_UPSTREAM_REV=3518992
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential bison flex \
-        cmake ninja-build pkg-config \
-        git ca-certificates curl zip unzip tar \
-        libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-        librdmacm-dev libibverbs-dev \
-        libssl-dev linux-libc-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Bring libfabric headers + libs in so MXL_ENABLE_FABRICS_OFI sees them.
-COPY --from=libfabric-build /usr/lib/libfabric* /usr/lib/
-COPY --from=libfabric-build /usr/lib/pkgconfig/libfabric.pc /usr/lib/pkgconfig/
-COPY --from=libfabric-build /usr/include/rdma/ /usr/include/rdma/
-
-RUN useradd -m build
-USER build
-WORKDIR /home/build
-
-# vcpkg bootstrap (same lane the existing efa-base Dockerfile uses).
-RUN git clone https://github.com/microsoft/vcpkg.git /home/build/vcpkg \
-    && cd /home/build/vcpkg \
-    && ./bootstrap-vcpkg.sh -disableMetrics
-ENV VCPKG_ROOT=/home/build/vcpkg
-
-# Upstream mxl at the same commit jonasohland's image is built on. This is
-# what makes the writer's libmxl byte-for-byte compatible with the gateway.
-RUN git clone https://github.com/dmf-mxl/mxl.git /home/build/mxl \
-    && cd /home/build/mxl \
-    && git checkout "${MXL_UPSTREAM_REV}"
-
-WORKDIR /home/build/mxl
-RUN cmake -S . --preset Linux-GCC-Release \
-        -DCMAKE_INSTALL_PREFIX=/usr \
-        -DMXL_ENABLE_FABRICS_OFI=ON
-RUN ninja -C build/Linux-GCC-Release
+FROM jonasohland/mxl:3518992-fabrics-efa
 
 USER 0:0
-RUN ninja -C /home/build/mxl/build/Linux-GCC-Release install \
-    && ldconfig
 
-# ── Stage 3: slim runtime ────────────────────────────────────────────────────
-FROM debian:trixie-slim AS runtime
+# decodebin / playbin chain for v210 production + the libav decoder family.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gstreamer1.0-x \
         gstreamer1.0-plugins-good \
@@ -90,23 +28,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gstreamer1.0-plugins-bad \
         gstreamer1.0-plugins-ugly \
         gstreamer1.0-libav \
-        librdmacm1t64 libibverbs1 \
-        dumb-init ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd -m mxl
+    && rm -rf /var/lib/apt/lists/*
 
-# libfabric + libmxl runtime libs.
-COPY --from=libfabric-build /usr/lib/libfabric* /usr/lib/
-COPY --from=mxl-builder /usr/lib/x86_64-linux-gnu/libmxl* /usr/lib/x86_64-linux-gnu/
-COPY --from=mxl-builder /usr/bin/mxl-* /usr/bin/
-RUN ldconfig
-
-# Flow JSON templates (upstream test data — same UUIDs the demo writer used).
-COPY --from=mxl-builder /home/build/mxl/lib/tests/data/v210_flow.json /home/mxl/v210_flow.json
-COPY --from=mxl-builder /home/build/mxl/lib/tests/data/audio_flow.json /home/mxl/audio_flow.json
+# v210 video + audio flow JSON templates. Pulled from the upstream test
+# data tree because that's the same schema mxl-k8s expects.
+COPY lib/tests/data/v210_flow.json /home/mxl/v210_flow.json
+COPY lib/tests/data/audio_flow.json /home/mxl/audio_flow.json
 RUN chown -R mxl:mxl /home/mxl
 
 USER mxl
 WORKDIR /home/mxl
+
 ENTRYPOINT []
 CMD ["/usr/bin/mxl-gst-testsrc", "-d", "/run/mxl/domain", "-v", "/home/mxl/v210_flow.json"]
