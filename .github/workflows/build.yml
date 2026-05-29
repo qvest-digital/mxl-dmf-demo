@@ -105,6 +105,17 @@ jobs:
             docker push ${ECR_REGISTRY}/${REPO}:latest
           fi
 
+      # Step 2b: Build and Push mxl-k8s-compatible Writer (no inheritance —
+      # this Dockerfile pins libmxl to upstream commit 3518992 so the
+      # mxl-k8s gateway can open the writer's flow on the source node.)
+      - name: Build and Push mxl-k8s Writer
+        run: |
+          docker build \
+            -f examples/Dockerfile.mxlk8s.writer \
+            -t ${{ steps.vars.outputs.gh_base }}/mxl-writer-mxlk8s:${{ steps.vars.outputs.tag }} \
+            .
+          docker push ${{ steps.vars.outputs.gh_base }}/mxl-writer-mxlk8s:${{ steps.vars.outputs.tag }}
+
       # Step 3: Build and Push Reader Image (Inherits from Base)
       - name: Build and Push Reader
         env:
