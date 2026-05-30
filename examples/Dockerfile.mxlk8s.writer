@@ -1,22 +1,22 @@
 # SPDX-FileCopyrightText: 2025 Contributors to the Media eXchange Layer project.
 # SPDX-License-Identifier: Apache-2.0
 #
-# mxl-writer image that reuses jonasohland's prebuilt libmxl so the binary
-# ABI matches the mxl-k8s gateway (which runs FROM the same image). This
-# is the simpler, guaranteed-compatible variant of the earlier from-source
-# attempt: no compiler-flag, no vcpkg-version, no libfabric-build drift —
-# the writer loads the exact same .so the gateway does.
+# mxl-writer image that pins libmxl + libfabric to the same canonical
+# qvest-digital build the mxl-k8s gateway loads, so the writer's flow
+# files round-trip through the gateway without ABI mismatch.
 #
-# jonasohland/mxl:3518992-fabrics-efa ships:
-#   - libmxl.so + libmxl-fabrics.so (built from dmf-mxl/mxl @ 3518992 +
-#     Jonas's read-only-mmap patch, see dmf-mxl/mxl#516)
-#   - libfabric 2.4 with the EFA provider (Amazon EFA installer's .debs)
-#   - the upstream tools/ binaries: mxl-gst-testsrc, mxl-info, etc.
+# Base: ghcr.io/qvest-digital/go-mxl-runtime:1.0.0-rc.5
+#   The go-mxl release pipeline (qvest-digital/go-mxl#47, #49) builds
+#   libfabric + rdma-core from upstream with the flag set that
+#   maximises provider coverage (efa, verbs, tcp, ...) and ships them
+#   alongside libmxl + libmxl-fabrics under /usr/lib. mxl-k8s gateway
+#   (docker/gateway.Dockerfile) consumes the matching builder image,
+#   so writer + gateway end up with byte-identical libmxl.so.
 #
-# All we add on top is GStreamer's plugins and the NMOS flow JSON template
-# that mxl-gst-testsrc reads.
+# Tag bump policy: keep this in sync with mxl-k8s gateway's
+# ARG GO_MXL_TAG, currently 1.0.0-rc.5.
 
-FROM jonasohland/mxl:3518992-fabrics-efa
+FROM ghcr.io/qvest-digital/go-mxl-runtime:1.0.0-rc.5
 
 USER 0:0
 
@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # data tree because that's the same schema mxl-k8s expects.
 COPY lib/tests/data/v210_flow.json /home/mxl/v210_flow.json
 COPY lib/tests/data/audio_flow.json /home/mxl/audio_flow.json
-RUN chown -R mxl:mxl /home/mxl
+RUN chown -R mxl:mxl /home/mxl || true
 
 USER mxl
 WORKDIR /home/mxl
