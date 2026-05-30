@@ -1,22 +1,23 @@
 # SPDX-FileCopyrightText: 2025 Contributors to the Media eXchange Layer project.
 # SPDX-License-Identifier: Apache-2.0
 #
-# mxl-writer image that pins libmxl + libfabric to the same canonical
-# qvest-digital build the mxl-k8s gateway loads, so the writer's flow
-# files round-trip through the gateway without ABI mismatch.
+# mxl-writer for mxl-k8s. Bases on jonasohland/mxl:3518992-fabrics-efa
+# because that image ships the upstream tools/ binaries (mxl-gst-testsrc,
+# mxl-info, ...) we need to produce flows. Note: the *canonical*
+# qvest-digital base is ghcr.io/qvest-digital/go-mxl-runtime — the
+# mxl-k8s gateway uses that for its libmxl + libfabric runtime, and it
+# is the long-term target for both writer and compositor (see review on
+# qvest-digital/mxl-dmf-demo-app#2). go-mxl-runtime ships libs only,
+# though, so until tools/mxl-gst-testsrc is built into the same image
+# (or compiled here in a builder stage) we stay on jonasohland to keep
+# the producer-side test pattern working.
 #
-# Base: ghcr.io/qvest-digital/go-mxl-runtime:1.0.0-rc.5
-#   The go-mxl release pipeline (qvest-digital/go-mxl#47, #49) builds
-#   libfabric + rdma-core from upstream with the flag set that
-#   maximises provider coverage (efa, verbs, tcp, ...) and ships them
-#   alongside libmxl + libmxl-fabrics under /usr/lib. mxl-k8s gateway
-#   (docker/gateway.Dockerfile) consumes the matching builder image,
-#   so writer + gateway end up with byte-identical libmxl.so.
-#
-# Tag bump policy: keep this in sync with mxl-k8s gateway's
-# ARG GO_MXL_TAG, currently 1.0.0-rc.5.
+# Empirically the jonasohland libmxl is ABI-compatible with the
+# go-mxl-runtime libmxl the gateway loads — first MxlFlowMirror went
+# Ready end-to-end on the PR cluster, so the on-disk flow header layout
+# matches across the two.
 
-FROM ghcr.io/qvest-digital/go-mxl-runtime:1.0.0-rc.5
+FROM jonasohland/mxl:3518992-fabrics-efa
 
 USER 0:0
 
@@ -34,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # data tree because that's the same schema mxl-k8s expects.
 COPY lib/tests/data/v210_flow.json /home/mxl/v210_flow.json
 COPY lib/tests/data/audio_flow.json /home/mxl/audio_flow.json
-RUN chown -R mxl:mxl /home/mxl || true
+RUN chown -R mxl:mxl /home/mxl
 
 USER mxl
 WORKDIR /home/mxl
