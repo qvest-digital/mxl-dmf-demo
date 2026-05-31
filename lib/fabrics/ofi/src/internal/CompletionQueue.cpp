@@ -84,7 +84,25 @@ namespace mxl::lib::fabrics::ofi
 
         fi_cq_data_entry entry;
 
-        ssize_t ret = fi_cq_sread(_raw, &entry, 1, nullptr, timeoutMs);
+        // See EventQueue::readBlocking for the rationale; same EINTR retry
+        // applies here so signal-interrupted blocking reads stay recoverable.
+        auto const deadline = std::chrono::steady_clock::now() + timeout;
+        ssize_t ret;
+        for (;;)
+        {
+            ret = fi_cq_sread(_raw, &entry, 1, nullptr, timeoutMs);
+            if (ret != -FI_EINTR)
+            {
+                break;
+            }
+            auto const remaining =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+            if (remaining <= 0)
+            {
+                return std::nullopt;
+            }
+            timeoutMs = remaining;
+        }
         return handleReadResult(ret, entry);
     }
 
