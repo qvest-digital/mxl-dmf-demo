@@ -85,6 +85,27 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mxl-base:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mxl-base:buildcache,mode=max
 
+      - name: Extract libmxl shared libraries and headers
+        run: |
+          mkdir -p /tmp/libmxl-artifacts/lib /tmp/libmxl-artifacts/include/mxl
+          docker pull ghcr.io/${{ github.repository_owner }}/mxl-base:${{ steps.vars.outputs.tag }}
+          # Stream only libmxl* files out of the container via tar — avoids copying all system libs
+          docker run --rm --entrypoint sh \
+            ghcr.io/${{ github.repository_owner }}/mxl-base:${{ steps.vars.outputs.tag }} \
+            -c 'cd /usr/lib/$(uname -m)-linux-gnu && tar -cf - libmxl*' \
+            | tar -xf - -C /tmp/libmxl-artifacts/lib/
+          # Headers (including generated version.h) are installed into the image
+          id=$(docker create ghcr.io/${{ github.repository_owner }}/mxl-base:${{ steps.vars.outputs.tag }})
+          docker cp "${id}:/usr/include/mxl/." /tmp/libmxl-artifacts/include/mxl/
+          docker rm "${id}"
+
+      - name: Upload libmxl shared libraries and headers
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmxl-${{ steps.vars.outputs.tag }}
+          path: /tmp/libmxl-artifacts/
+          if-no-files-found: error
+
       # Step 2: Build and Push Writer Image (Inherits from Base)
       - name: Build and Push Writer
         env:

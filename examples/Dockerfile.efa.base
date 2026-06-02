@@ -77,6 +77,7 @@ COPY --from=libfabric-build /usr/include/rdma/ /usr/include/rdma/
 COPY --from=libfabric-build /usr/include/rdma/fi_errno.h /usr/include/rdma/
 RUN --mount=type=bind,from=builder,target=/builder \
     cp -a /builder/usr/lib/$(uname -m)-linux-gnu/libmxl* /usr/lib/$(uname -m)-linux-gnu/
+COPY --from=builder /usr/include/mxl/ /usr/include/mxl/
 COPY --from=builder /usr/bin/mxl-* /usr/bin/
 
 # ADD THIS LINE: Copy the test data from the builder stage into the final base image
