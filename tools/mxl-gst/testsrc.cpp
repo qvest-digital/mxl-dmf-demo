@@ -348,7 +348,11 @@ namespace
                 "clockoverlay ! "
                 "videoconvert ! "
                 "videoscale ! "
-                "queue ! "
+                // leaky=downstream: drop the oldest buffer when full instead
+                // of back-pressuring the live source. Without this a slow
+                // consumer makes the source throttle to the consumer rate and
+                // the producer falls permanently behind real time.
+                "queue leaky=downstream max-size-buffers=2 max-size-time=0 max-size-bytes=0 ! "
                 "appsink name=appsink ",
                 _config.pattern,
                 _config.frameWidth,
@@ -515,7 +519,20 @@ namespace
                 if (auto const pipelineSample = gstPipeline.pull(timeoutNs); pipelineSample)
                 {
                     auto const bufferTs = GST_BUFFER_PTS(pipelineSample.buffer()); // PTS was already converted to TAI time in the pull()
-                    auto const gstGrainIndex = ::mxlTimestampToIndex(&gstPipeline.config().frameRate, bufferTs);
+                    auto gstGrainIndex = ::mxlTimestampToIndex(&gstPipeline.config().frameRate, bufferTs);
+
+                    // Never let the write index lag wall-clock time. If this
+                    // pipeline can't sustain the grain rate (contention across
+                    // concurrent v210 flows), the buffer PTS — and hence the
+                    // grain index — falls progressively behind real time, so a
+                    // consumer reading at the live index gets minutes-old
+                    // frames. Clamp to the live index; the gap up to it is
+                    // emitted as invalid grains by the skip path below, and the
+                    // freshest decoded buffer is committed at the live index.
+                    if (auto const liveIndex = ::mxlGetCurrentIndex(&gstPipeline.config().frameRate); liveIndex > gstGrainIndex)
+                    {
+                        gstGrainIndex = liveIndex;
+                    }
 
                     // First buffer, set the initial grain index
                     if (grainIndex == MXL_UNDEFINED_INDEX)
