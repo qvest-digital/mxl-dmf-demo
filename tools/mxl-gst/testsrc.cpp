@@ -360,9 +360,25 @@ namespace
             MXL_INFO("Generating following GStreamer video pipeline -> {}", pipelineDesc);
             launchPipeline(pipelineDesc, _config.frameRate);
 
-            // Configure appsink
+            // Configure appsink.
+            //
+            // max-buffers + drop are mandatory: the default appsink keeps an
+            // UNBOUNDED queue and pulls oldest-first. If this producer's pull
+            // loop ever falls behind real time (9x v210 1080p: a 5 MB memcpy +
+            // slice commit per grain across concurrent flows), the queue grows
+            // without limit and every subsequent pull returns an ever-older
+            // buffer — so the grain index derived from the buffer PTS drifts
+            // permanently behind the wall clock (observed: tens of minutes of
+            // lag, tiles frozen on stale frames). Bounding the queue and
+            // dropping the oldest buffer keeps the producer pinned to the live
+            // frame; the gap is absorbed by the skipped-grain / invalid-grain
+            // path in run().
             auto const appSink = getAppSink();
             ::g_object_set(G_OBJECT(appSink),
+                "max-buffers",
+                static_cast<guint>(3),
+                "drop",
+                TRUE,
                 "caps",
                 ::gst_caps_new_simple("video/x-raw",
                     "format",
@@ -628,16 +644,13 @@ namespace
             gstPipeline.start();
 
             auto const samplesPerBatch = gstPipeline.config().samplesPerBatch;
-            auto const batchPeriodNs = static_cast<std::uint64_t>(samplesPerBatch) * 1'000'000'000ULL * gstPipeline.config().sampleRate.denominator /
-                                       gstPipeline.config().sampleRate.numerator;
 
             auto sampleIndex = std::uint64_t{MXL_UNDEFINED_INDEX};
             while (!g_exit_requested)
             {
-                auto const timeoutNs =
-                    (sampleIndex != MXL_UNDEFINED_INDEX)
-                        ? std::max<std::uint64_t>(mxlGetNsUntilIndex(sampleIndex + samplesPerBatch, &gstPipeline.config().sampleRate), batchPeriodNs)
-                        : 100'000'000ULL; // arbitrary high timeout for the first sample
+                auto const timeoutNs = (sampleIndex != MXL_UNDEFINED_INDEX)
+                                         ? mxlGetNsUntilIndex(sampleIndex + samplesPerBatch, &gstPipeline.config().sampleRate)
+                                         : 100'000'000ULL; // arbitrary high timeout for the first sample
 
                 if (auto const pipelineSample = gstPipeline.pull(timeoutNs); pipelineSample)
                 {
