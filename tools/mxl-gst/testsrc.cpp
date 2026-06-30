@@ -389,7 +389,7 @@ namespace
             auto const appSink = getAppSink();
             ::g_object_set(G_OBJECT(appSink),
                 "max-buffers",
-                static_cast<guint>(3),
+                static_cast<guint>(8),
                 "drop",
                 TRUE,
                 "caps",
@@ -530,15 +530,21 @@ namespace
                     auto const bufferTs = GST_BUFFER_PTS(pipelineSample.buffer()); // PTS was already converted to TAI time in the pull()
                     auto gstGrainIndex = ::mxlTimestampToIndex(&gstPipeline.config().frameRate, bufferTs);
 
-                    // Never let the write index lag wall-clock time. If this
-                    // pipeline can't sustain the grain rate (contention across
-                    // concurrent v210 flows), the buffer PTS — and hence the
-                    // grain index — falls progressively behind real time, so a
-                    // consumer reading at the live index gets minutes-old
-                    // frames. Clamp to the live index; the gap up to it is
-                    // emitted as invalid grains by the skip path below, and the
-                    // freshest decoded buffer is committed at the live index.
-                    if (auto const liveIndex = ::mxlGetCurrentIndex(&gstPipeline.config().frameRate); liveIndex > gstGrainIndex)
+                    // Resync to wall-clock only on GROSS lag. Clamping every
+                    // frame (whenever liveIndex > gstGrainIndex) pinned the
+                    // write index to the wall clock while the buffer content
+                    // lagged by the pipeline latency (overlays + convert +
+                    // queue). That latency wobbles frame-to-frame, so the
+                    // content-vs-index offset wobbled too and motion jittered
+                    // even with ~zero dropped frames. A steady small latency is
+                    // fine for a multiviewer; only resync if the producer falls
+                    // far enough behind (~1s) that consumers would see clearly
+                    // stale frames — which the I420 pipeline no longer does in
+                    // steady state. The gap on resync is still filled by the
+                    // invalid-grain skip path below.
+                    constexpr std::uint64_t kMaxLagGrains = 30; // ~1s at 30fps
+                    if (auto const liveIndex = ::mxlGetCurrentIndex(&gstPipeline.config().frameRate);
+                        liveIndex > gstGrainIndex + kMaxLagGrains)
                     {
                         gstGrainIndex = liveIndex;
                     }
