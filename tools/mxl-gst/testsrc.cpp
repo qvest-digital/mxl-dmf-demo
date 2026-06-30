@@ -520,7 +520,16 @@ namespace
 
             auto grainIndex = std::uint64_t{MXL_UNDEFINED_INDEX};
 
-            auto slicesPerBatch = _configInfo.common.maxCommitBatchSizeHint;
+            // Commit each grain in ONE batch. The default honours
+            // maxCommitBatchSizeHint and spreads the slice commits across half
+            // a frame period (sleepTimeBetweenBatches), so a grain becomes
+            // fully available at a smeared, uneven time. Our consumers read
+            // whole grains, so that buys nothing and instead jitters each
+            // grain's availability by up to half a frame — which a consumer
+            // that timestamps on arrival turns into uneven output PTS (~±16ms),
+            // i.e. visibly janky motion even with zero dropped frames. One
+            // batch makes the whole grain land at once, at the grain instant.
+            auto slicesPerBatch = static_cast<std::uint16_t>(gstPipeline.config().frameHeight);
             while (!g_exit_requested)
             {
                 auto const timeoutNs = (grainIndex != MXL_UNDEFINED_INDEX) ? ::mxlGetNsUntilIndex(grainIndex + 1, &gstPipeline.config().frameRate)
