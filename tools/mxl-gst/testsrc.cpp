@@ -342,12 +342,21 @@ namespace
             MXL_INFO("Creating video pipeline with config: {}", _config.display());
 
             auto pipelineDesc = fmt::format(
+                // Generate + overlay in 8-bit planar I420, convert to v210 ONCE
+                // at the end. The pango overlays (text/clock) render RGBA and
+                // blend per-frame; doing that on v210 (10-bit packed 4:2:2) at
+                // 1080p is several times more expensive and pushed the producer
+                // below the grain rate — the appsink then dropped ~half the
+                // frames and libmxl backfilled the gaps, so every consumer
+                // (local and cross-node) saw jerky, stale motion. Overlaying on
+                // I420 lets the pipeline sustain the full frame rate; a single
+                // videoconvert produces the v210 the flow requires.
                 "videotestsrc name=videotestsrc is-live=true do-timestamp=true pattern={} ! "
-                "video/x-raw,format=v210,width={},height={},framerate={}/{} ! "
+                "video/x-raw,format=I420,width={},height={},framerate={}/{} ! "
                 "textoverlay text=\"{}\" font-desc=\"Sans, 36\" ! "
                 "clockoverlay ! "
                 "videoconvert ! "
-                "videoscale ! "
+                "video/x-raw,format=v210 ! "
                 // leaky=downstream: drop the oldest buffer when full instead
                 // of back-pressuring the live source. Without this a slow
                 // consumer makes the source throttle to the consumer rate and
