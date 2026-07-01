@@ -3,6 +3,7 @@
 
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -341,18 +342,22 @@ namespace
         {
             MXL_INFO("Creating video pipeline with config: {}", _config.display());
 
+            // Overlay working format. Default I420 (8-bit planar): the pango
+            // text/clock overlays blend RGBA per-frame, which on v210 (10-bit
+            // packed 4:2:2) is several times more expensive and pushes the
+            // producer below the grain rate -> appsink drops ~half the frames,
+            // libmxl backfills, consumers see jerky/stale motion. I420 sustains
+            // the full rate; a single videoconvert makes the v210 the flow needs.
+            // Set MXL_OVERLAY_FORMAT=v210 to force the slow blend-on-v210 path
+            // (a demo reference tile that deliberately shows that jank).
+            auto overlayFmt = std::string{"I420"};
+            if (auto const* e = std::getenv("MXL_OVERLAY_FORMAT"); e && std::string{e} == "v210")
+            {
+                overlayFmt = "v210";
+            }
             auto pipelineDesc = fmt::format(
-                // Generate + overlay in 8-bit planar I420, convert to v210 ONCE
-                // at the end. The pango overlays (text/clock) render RGBA and
-                // blend per-frame; doing that on v210 (10-bit packed 4:2:2) at
-                // 1080p is several times more expensive and pushed the producer
-                // below the grain rate — the appsink then dropped ~half the
-                // frames and libmxl backfilled the gaps, so every consumer
-                // (local and cross-node) saw jerky, stale motion. Overlaying on
-                // I420 lets the pipeline sustain the full frame rate; a single
-                // videoconvert produces the v210 the flow requires.
                 "videotestsrc name=videotestsrc is-live=true do-timestamp=true pattern={} ! "
-                "video/x-raw,format=I420,width={},height={},framerate={}/{} ! "
+                "video/x-raw,format={},width={},height={},framerate={}/{} ! "
                 "textoverlay text=\"{}\" font-desc=\"Sans, 36\" ! "
                 "clockoverlay ! "
                 "videoconvert ! "
@@ -364,6 +369,7 @@ namespace
                 "queue leaky=downstream max-size-buffers=2 max-size-time=0 max-size-bytes=0 ! "
                 "appsink name=appsink ",
                 _config.pattern,
+                overlayFmt,
                 _config.frameWidth,
                 _config.frameHeight,
                 _config.frameRate.numerator,
