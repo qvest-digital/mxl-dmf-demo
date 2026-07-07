@@ -571,8 +571,7 @@ namespace
                     // steady state. The gap on resync is still filled by the
                     // invalid-grain skip path below.
                     constexpr std::uint64_t kMaxLagGrains = 30; // ~1s at 30fps
-                    if (auto const liveIndex = ::mxlGetCurrentIndex(&gstPipeline.config().frameRate);
-                        liveIndex > gstGrainIndex + kMaxLagGrains)
+                    if (auto const liveIndex = ::mxlGetCurrentIndex(&gstPipeline.config().frameRate); liveIndex > gstGrainIndex + kMaxLagGrains)
                     {
                         gstGrainIndex = liveIndex;
                     }
