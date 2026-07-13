@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the Media eXchange Layer project.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -536,12 +537,24 @@ namespace
             // i.e. visibly janky motion even with zero dropped frames. One
             // batch makes the whole grain land at once, at the grain instant.
             auto slicesPerBatch = static_cast<std::uint16_t>(gstPipeline.config().frameHeight);
+
+            // Stall watchdog: the empty-pull path below is otherwise silent and
+            // unbounded. If the GStreamer pipeline stops delivering samples the
+            // writer keeps looping for hours — no writes, no log, while the
+            // clock-derived head keeps advancing and consumers starve on the
+            // stale ring (DMF-398, seen live on dev). Fail fast instead: the
+            // exception ends the pipeline thread and the process, so the
+            // container restarts with a fresh pipeline.
+            constexpr auto kPipelineStallTimeout = std::chrono::seconds{10};
+            auto lastSampleTime = std::chrono::steady_clock::now();
+
             while (!g_exit_requested)
             {
                 auto const timeoutNs = (grainIndex != MXL_UNDEFINED_INDEX) ? ::mxlGetNsUntilIndex(grainIndex + 1, &gstPipeline.config().frameRate)
                                                                            : 100'000'000ULL; // arbitrary high timeout for the first grain
                 if (auto const pipelineSample = gstPipeline.pull(timeoutNs); pipelineSample)
                 {
+                    lastSampleTime = std::chrono::steady_clock::now();
                     auto const bufferTs = GST_BUFFER_PTS(pipelineSample.buffer()); // PTS was already converted to TAI time in the pull()
                     auto gstGrainIndex = ::mxlTimestampToIndex(&gstPipeline.config().frameRate, bufferTs);
 
@@ -558,8 +571,7 @@ namespace
                     // steady state. The gap on resync is still filled by the
                     // invalid-grain skip path below.
                     constexpr std::uint64_t kMaxLagGrains = 30; // ~1s at 30fps
-                    if (auto const liveIndex = ::mxlGetCurrentIndex(&gstPipeline.config().frameRate);
-                        liveIndex > gstGrainIndex + kMaxLagGrains)
+                    if (auto const liveIndex = ::mxlGetCurrentIndex(&gstPipeline.config().frameRate); liveIndex > gstGrainIndex + kMaxLagGrains)
                     {
                         gstGrainIndex = liveIndex;
                     }
@@ -678,6 +690,10 @@ namespace
                     grainIndex += 1U;
                     ::mxlSleepForNs(::mxlGetNsUntilIndex(grainIndex, &gstPipeline.config().frameRate));
                 }
+                else if (std::chrono::steady_clock::now() - lastSampleTime > kPipelineStallTimeout)
+                {
+                    throw std::runtime_error{"video pipeline stalled: no sample from gstreamer within 10s"};
+                }
             }
         }
 
@@ -693,6 +709,11 @@ namespace
             auto const samplesPerBatch = gstPipeline.config().samplesPerBatch;
 
             auto sampleIndex = std::uint64_t{MXL_UNDEFINED_INDEX};
+
+            // Stall watchdog — same rationale as the video loop (DMF-398).
+            constexpr auto kPipelineStallTimeout = std::chrono::seconds{10};
+            auto lastSampleTime = std::chrono::steady_clock::now();
+
             while (!g_exit_requested)
             {
                 auto const timeoutNs = (sampleIndex != MXL_UNDEFINED_INDEX)
@@ -701,6 +722,7 @@ namespace
 
                 if (auto const pipelineSample = gstPipeline.pull(timeoutNs); pipelineSample)
                 {
+                    lastSampleTime = std::chrono::steady_clock::now();
                     auto const bufferTs = GST_BUFFER_PTS(pipelineSample.buffer()); // PTS was already converted to TAI time in the pull()
                     auto const gstSampleIndex = ::mxlTimestampToIndex(&gstPipeline.config().sampleRate, bufferTs);
 
@@ -812,6 +834,10 @@ namespace
 
                     sampleIndex += samplesPerBatch;
                     mxlSleepForNs(mxlGetNsUntilIndex(sampleIndex, &gstPipeline.config().sampleRate));
+                }
+                else if (std::chrono::steady_clock::now() - lastSampleTime > kPipelineStallTimeout)
+                {
+                    throw std::runtime_error{"audio pipeline stalled: no sample from gstreamer within 10s"};
                 }
             }
         }
